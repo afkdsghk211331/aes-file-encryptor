@@ -1,0 +1,14 @@
+{
+  "name": "aes-file-encryptor-monorepo",
+  "private": true,
+  "workspaces": [
+    "aes-file-encryptor",
+    "aes-file-encryptor-web"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=aes-file-encryptor-web",
+    "build:lib": "npm run build --workspace=aes-file-encryptor",
+    "build:web": "npm run build --workspace=aes-file-encryptor-web",
+    "build": "npm run build:lib && npm run build:web"
+  }
+}

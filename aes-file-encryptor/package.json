@@ -1,7 +1,7 @@
 {
   "name": "aes-file-encryptor",
   "version": "1.0.0",
-  "description": "AES file encryption/decryption library supporting CTR and CBC modes, designed for browser environments with large file support.",
+  "description": "AES file encryption/decryption library supporting CTR, CBC and CFB modes, designed for browser environments with large file support.",
   "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
@@ -23,7 +23,7 @@
   ],
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test test/test.mjs"
+    "prepare": "node build.mjs"
   },
   "keywords": [
     "aes",
@@ -32,6 +32,7 @@
     "file",
     "cbc",
     "ctr",
+    "cfb",
     "browser",
     "web-crypto"
   ],
