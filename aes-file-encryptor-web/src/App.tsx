@@ -142,8 +142,10 @@ function ResultDisplay({
   onDownload: () => void;
 }) {
   const verb = action === "encrypt" ? "Encrypted" : "Decrypted";
-  const suffix = action === "encrypt" ? ".encrypted" : ".decrypted";
-  const dlName = fileName + suffix;
+  const suffix = action === "encrypt" ? ".encrypted" : "";
+  const dlName = action === "encrypt"
+    ? fileName + suffix
+    : fileName.replace(/\.encrypted$/, "");
 
   return (
     <div className="bg-gray-800/60 rounded-xl p-6 space-y-3">
@@ -178,7 +180,10 @@ function BenchCard({
   action: Action;
   fileName: string;
 }) {
-  const suffix = action === "encrypt" ? ".encrypted" : ".decrypted";
+  const suffix = action === "encrypt" ? ".encrypted" : "";
+  const dlName = action === "encrypt"
+    ? fileName + suffix
+    : fileName.replace(/\.encrypted$/, "");
   return (
     <div className="bg-gray-800/60 rounded-xl p-4 space-y-2">
       <div className="font-bold text-cyan-300">AES-{result.mode}</div>
@@ -385,8 +390,10 @@ export default function App() {
             mode={result.mode}
             fileName={result.fileName}
             onDownload={() => {
-              const suffix = result.action === "encrypt" ? ".encrypted" : ".decrypted";
-              downloadBlob(result.blob, result.fileName + suffix);
+              const dlName = result.action === "encrypt"
+                ? result.fileName + ".encrypted"
+                : result.fileName.replace(/\.encrypted$/, "");
+              downloadBlob(result.blob, dlName);
             }}
           />
         )}
