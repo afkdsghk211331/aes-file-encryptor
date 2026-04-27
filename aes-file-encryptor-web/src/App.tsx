@@ -481,9 +481,10 @@ export default function App() {
               {busy ? "Processing..." : `${action === "encrypt" ? "Encrypt" : "Decrypt"} (${mode})`}
             </button>
             <button
-              disabled={!canRun}
+              disabled={!canRun || action === "decrypt"}
+              title={action === "decrypt" ? "Comparison is only available for encryption" : ""}
               className={`py-3 rounded-lg font-semibold transition-colors ${
-                canRun
+                canRun && action !== "decrypt"
                   ? "bg-violet-500 hover:bg-violet-400 text-white"
                   : "bg-gray-200 text-gray-400 cursor-not-allowed dark:bg-gray-800 dark:text-gray-600"
               }`}
