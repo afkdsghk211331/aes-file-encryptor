@@ -62,7 +62,7 @@ async function deriveKey(
     { name: "PBKDF2", salt, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
     keyMaterial,
     { name: "AES-GCM", length: 256 }, // base algorithm for derivation
-    false,
+    true, // extractable — needed for HKDF chunk-key derivation
     ["encrypt", "decrypt"],
   );
 }
