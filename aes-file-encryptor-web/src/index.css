@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-gray-950 text-gray-100 min-h-screen;
+}
+
+#root {
+  min-height: 100vh;
+}

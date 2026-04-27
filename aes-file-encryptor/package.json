@@ -1,0 +1,42 @@
+{
+  "name": "aes-file-encryptor",
+  "version": "1.0.0",
+  "description": "AES file encryption/decryption library supporting CTR and CBC modes, designed for browser environments with large file support.",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/test.mjs"
+  },
+  "keywords": [
+    "aes",
+    "encryption",
+    "decryption",
+    "file",
+    "cbc",
+    "ctr",
+    "browser",
+    "web-crypto"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
