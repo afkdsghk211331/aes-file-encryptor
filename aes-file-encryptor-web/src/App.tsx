@@ -6,18 +6,20 @@ import { encryptFile, decryptFile, type EncryptionMode } from "aes-file-encrypto
 // ---------------------------------------------------------------------------
 type ThemeMode = "light" | "dark" | "system";
 
-const ThemeCtx = createContext<{ theme: ThemeMode; setTheme: (t: ThemeMode) => void }>(
-  null!,
-);
+const ThemeCtx = createContext<{ theme: ThemeMode; setTheme: (t: ThemeMode) => void }>(null!);
 
 function useTheme() {
   return useContext(ThemeCtx);
 }
 
-function resolveTheme(theme: ThemeMode): boolean {
-  // returns true for dark mode
-  if (theme === "system") return window.matchMedia("(prefers-color-scheme: dark)").matches;
-  return theme === "dark";
+function applyTheme(mode: ThemeMode) {
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const dark = mode === "system" ? prefersDark : mode === "dark";
+  if (dark) {
+    document.documentElement.classList.add("dark");
+  } else {
+    document.documentElement.classList.remove("dark");
+  }
 }
 
 function ThemeProvider({ children }: { children: React.ReactNode }) {
@@ -28,14 +30,14 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     localStorage.setItem("theme-mode", theme);
-    const dark = resolveTheme(theme);
-    document.documentElement.classList.toggle("dark", dark);
+    applyTheme(theme);
   }, [theme]);
 
+  // Listen for OS theme changes when in "system" mode
   useEffect(() => {
     if (theme !== "system") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = () => document.documentElement.classList.toggle("dark", mq.matches);
+    const handler = () => applyTheme("system");
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   }, [theme]);
@@ -45,29 +47,25 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
 
 function ThemeToggle() {
   const { theme, setTheme } = useTheme();
-  const cycle = () => {
-    const order: ThemeMode[] = ["system", "light", "dark"];
-    const next = order[(order.indexOf(theme) + 1) % 3];
-    setTheme(next);
-  };
-
-  const icons: Record<ThemeMode, string> = { light: "☀", dark: "☾", system: "◐" };
-  const labels: Record<ThemeMode, string> = {
-    light: "Light",
-    dark: "Dark",
-    system: "Auto",
-  };
+  const options: ThemeMode[] = ["light", "system", "dark"];
+  const labels: Record<ThemeMode, string> = { light: "Light", system: "Auto", dark: "Dark" };
 
   return (
-    <button
-      onClick={cycle}
-      className="flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors
-        bg-gray-200 text-gray-700 hover:bg-gray-300
-        dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
-      title={`Theme: ${labels[theme]} (click to cycle)`}
-    >
-      {icons[theme]} <span className="hidden sm:inline">{labels[theme]}</span>
-    </button>
+    <div className="flex items-center gap-1 bg-gray-200 dark:bg-gray-800 rounded-lg p-1">
+      {options.map((opt) => (
+        <button
+          key={opt}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            theme === opt
+              ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow"
+              : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+          }`}
+          onClick={() => setTheme(opt)}
+        >
+          {labels[opt]}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -153,13 +151,17 @@ function FileSelector({
       />
       {file ? (
         <div className="space-y-1">
-          <div className="text-3xl">📄</div>
+          <div className="text-3xl text-gray-400 dark:text-gray-500">
+            <FileIcon />
+          </div>
           <div className="font-medium text-cyan-600 dark:text-cyan-300">{file.name}</div>
           <div className="text-sm text-gray-500 dark:text-gray-400">{formatBytes(file.size)}</div>
         </div>
       ) : (
         <div className="space-y-1">
-          <div className="text-3xl text-gray-400 dark:text-gray-500">📁</div>
+          <div className="text-3xl text-gray-400 dark:text-gray-500">
+            <FolderIcon />
+          </div>
           <div className="text-gray-500 dark:text-gray-400">{label}</div>
         </div>
       )}
@@ -216,7 +218,10 @@ function ResultDisplay({
   return (
     <div className="bg-gray-100 dark:bg-gray-800/60 rounded-xl p-6 space-y-3">
       <div className="flex items-center gap-2 text-green-600 dark:text-green-400 font-semibold text-lg">
-        ✓ {verb} successfully
+        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+        {verb} successfully
       </div>
       <div className="grid grid-cols-2 gap-2 text-sm text-gray-600 dark:text-gray-300">
         <span>Mode:</span>
@@ -265,6 +270,25 @@ function BenchCard({
         Download ({result.mode})
       </button>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SVG icons
+// ---------------------------------------------------------------------------
+function FileIcon() {
+  return (
+    <svg className="w-10 h-10 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+    </svg>
+  );
+}
+
+function FolderIcon() {
+  return (
+    <svg className="w-10 h-10 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+    </svg>
   );
 }
 
@@ -341,6 +365,18 @@ export default function App() {
     benchResults &&
     (benchResults.cbc.duration < benchResults.ctr.duration ? "CBC" : "CTR");
 
+  const lockIcon = (
+    <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+    </svg>
+  );
+
+  const unlockIcon = (
+    <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 119 0v3.75M3.75 21.75h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H3.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+    </svg>
+  );
+
   return (
     <ThemeProvider>
       <div className="min-h-screen py-12 px-4
@@ -377,7 +413,10 @@ export default function App() {
                   setError("");
                 }}
               >
-                {a === "encrypt" ? "🔒 Encrypt" : "🔓 Decrypt"}
+                {a === "encrypt"
+                  ? <>{lockIcon} Encrypt</>
+                  : <>{unlockIcon} Decrypt</>
+                }
               </button>
             ))}
           </div>
@@ -404,7 +443,7 @@ export default function App() {
               type="password"
               value={key}
               onChange={(e) => setKey(e.target.value)}
-              placeholder="Enter your secret passphrase…"
+              placeholder="Enter your secret passphrase"
               className="w-full px-4 py-3 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent font-mono
                 dark:bg-gray-800 dark:border-gray-700 dark:text-white dark:placeholder-gray-500"
             />
@@ -424,7 +463,7 @@ export default function App() {
               }`}
               onClick={handleProcess}
             >
-              {busy ? "Processing…" : `${action === "encrypt" ? "Encrypt" : "Decrypt"} (${mode})`}
+              {busy ? "Processing..." : `${action === "encrypt" ? "Encrypt" : "Decrypt"} (${mode})`}
             </button>
             <button
               disabled={!canRun}
@@ -435,7 +474,7 @@ export default function App() {
               }`}
               onClick={handleBenchmark}
             >
-              {busy ? "Running…" : "Compare CBC vs CTR"}
+              {busy ? "Running..." : "Compare CBC vs CTR"}
             </button>
           </div>
 
