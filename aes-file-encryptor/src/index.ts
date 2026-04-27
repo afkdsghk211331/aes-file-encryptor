@@ -61,7 +61,7 @@ async function deriveKey(
   return crypto.subtle.deriveKey(
     { name: "PBKDF2", salt, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
     keyMaterial,
-    { name: "AES-GCM", length: 256 }, // base algorithm for derivation
+    { name: "AES-CTR", length: 256 }, // matches CTR direct use; CBC only extracts raw bytes
     true, // extractable — needed for HKDF chunk-key derivation
     ["encrypt", "decrypt"],
   );
