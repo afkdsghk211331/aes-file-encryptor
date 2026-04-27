@@ -40,8 +40,8 @@ npm run preview     # 本地预览生产构建
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│              AES File Encryptor                      │
-│     Encrypt and decrypt files in your browser        │
+│  AES File Encryptor                  [Light Auto Dark]
+│  Encrypt and decrypt files in your browser           │
 ├─────────────────────────────────────────────────────┤
 │  [🔒 Encrypt]  [🔓 Decrypt]                         │
 ├─────────────────────────────────────────────────────┤
@@ -52,22 +52,24 @@ npm run preview     # 本地预览生产构建
 ├─────────────────────────────────────────────────────┤
 │  Key / Passphrase                                   │
 │  ┌───────────────────────────────────────────┐      │
-│  │ Enter your secret passphrase…             │      │
+│  │ Enter your secret passphrase              │      │
 │  └───────────────────────────────────────────┘      │
 ├─────────────────────────────────────────────────────┤
-│  [  AES-CBC  ]  [  AES-CTR  ]                       │
+│  [ AES-CBC ]  [ AES-CTR ]  [ AES-CFB ]              │
 ├─────────────────────────────────────────────────────┤
-│  [ Encrypt (CBC) ]      [ Compare CBC vs CTR ]      │
+│  [ Encrypt (CBC) ]      [ Compare All 3 Modes ]     │
+├─────────────────────────────────────────────────────┤
+│  Encrypting...                          ██████░░ 75%│
 ├─────────────────────────────────────────────────────┤
 ```
 
 1. **切换模式**：点击 `Encrypt` 或 `Decrypt` 按钮
 2. **上传文件**：拖拽文件到上传区域，或点击选择文件
 3. **输入密钥**：输入任意长度的密码短语
-4. **选择算法**：点击 `AES-CBC` 或 `AES-CTR`
+4. **选择算法**：点击 `AES-CBC`、`AES-CTR` 或 `AES-CFB`
 5. **执行**：
-   - `Encrypt/Decrypt (CBC/CTR)` — 单次操作
-   - `Compare CBC vs CTR` — 同时运行两种模式并对比性能
+   - `Encrypt/Decrypt (模式)` — 单次操作，带进度条
+   - `Compare All 3 Modes` — 依次运行三种模式并对比性能（柱状图）
 6. **下载**：操作完成后点击 `Download` 下载结果文件
 
 ### 支持的文件
@@ -88,12 +90,12 @@ npm run preview     # 本地预览生产构建
 
 - 小文件（< 10 MB）：瞬间完成
 - 中等文件（10-100 MB）：数秒
-- 大文件（100 MB+）：工具采用 1 MB 分块处理，防止浏览器崩溃
+- 大文件（100 MB+）：采用 1 MB 分块处理，进度条实时显示处理进度
 
 ## 技术栈
 
 - **React 18** — UI 框架
 - **Vite 5** — 构建工具
-- **Tailwind CSS** — 样式
+- **Tailwind CSS** — 样式（支持亮色/暗色主题，跟随系统）
 - **TypeScript** — 类型安全
 - **Web Crypto API** — 浏览器原生加密（零依赖）

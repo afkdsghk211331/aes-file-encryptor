@@ -76,30 +76,31 @@ npm run preview        # 预览生产构建
 
 ### 加密模式对比
 
-| 特性 | AES-CBC | AES-CTR |
-|------|---------|---------|
-| 填充 | 需要 PKCS#7 | 无需填充 |
-| 加密后文件大小 | 略大（填充开销） | 与原文件一致 |
-| 性能 | 稍慢（需派生子密钥） | 更快 |
-| 解密独立性 | 各块独立（可并行） | 顺序依赖 |
-| 适用场景 | 需要块独立解密 | 追求性能和零膨胀 |
+| 特性 | AES-CBC | AES-CTR | AES-CFB |
+|------|---------|---------|---------|
+| 填充 | 需要 PKCS#7 | 无需填充 | 无需填充 |
+| 加密后文件大小 | 略大（填充开销） | 与原文件一致 | 与原文件一致 |
+| 性能 | 稍慢（需派生子密钥） | 更快（Web Crypto 原生） | 较慢（JS 实现 AES 块加密） |
+| 解密独立性 | 各块独立（可并行） | 顺序依赖 | 顺序依赖（标准 CFB 链接） |
+| 适用场景 | 需要块独立解密 | 追求性能和零膨胀 | 需要标准流加密模式 |
 
 ### 操作步骤
 
 1. **选择模式**：点击顶部 `Encrypt` / `Decrypt` 切换加密或解密
 2. **选择文件**：拖拽文件到上传区域，或点击浏览选择
 3. **输入密钥**：在密钥输入框中输入密码短语（任意长度）
-4. **选择算法**：点击 `AES-CBC` 或 `AES-CTR` 选择加密模式
+4. **选择算法**：点击 `AES-CBC`、`AES-CTR` 或 `AES-CFB` 选择加密模式
 5. **执行操作**：
-   - 点击 `Encrypt (CBC/CTR)` 或 `Decrypt (CBC/CTR)` 执行单个操作
-   - 点击 `Compare CBC vs CTR` 同时运行两种模式并对比性能
+   - 点击 `Encrypt (CBC/CTR/CFB)` 或 `Decrypt (CBC/CTR/CFB)` 执行单个操作
+   - 点击 `Compare All 3 Modes` 同时运行三种模式并对比性能（显示进度条和柱状图）
 6. **下载结果**：操作完成后点击 `Download` 按钮下载文件
 
 ### 使用界面功能
 
 - **加密**：选择文件 → 输入密钥 → 选择模式 → 点击加密 → 下载加密文件
 - **解密**：切换到 Decrypt → 选择加密文件 → 输入相同密钥 → 选择相同模式 → 点击下载
-- **性能对比**：点击 `Compare CBC vs CTR` 按钮，界面会显示两种模式的处理时间和速度柱状图
+- **性能对比**：点击 `Compare All 3 Modes` 按钮，界面会显示三种模式的处理时间、速度柱状图和最快模式标识
+- **进度条**：加密/解密过程中实时显示百分比进度
 
 ## npm 包独立使用
 
@@ -127,8 +128,15 @@ const decrypted = await decryptFile(encryptedFile, "my-password", "CBC");
 
 | 函数 | 参数 | 返回值 |
 |------|------|--------|
-| `encryptFile(file, key, mode)` | `file: File`, `key: string`, `mode: "CBC"\|"CTR"` | `Promise<Blob>` |
-| `decryptFile(file, key, mode)` | `file: File`, `key: string`, `mode: "CBC"\|"CTR"` | `Promise<Blob>` |
+| `encryptFile(file, key, mode, options?)` | `file: File`, `key: string`, `mode: "CBC"\|"CTR"\|"CFB"`, `options?: { onProgress?: (pct: number) => void }` | `Promise<Blob>` |
+| `decryptFile(file, key, mode, options?)` | `file: File`, `key: string`, `mode: "CBC"\|"CTR"\|"CFB"`, `options?: { onProgress?: (pct: number) => void }` | `Promise<Blob>` |
+
+## 安全性
+
+- **密钥派生**：使用 PBKDF2-SHA256（10 万次迭代）从用户密码派生 256 位 AES 密钥
+- **随机 IV**：CBC/CFB 模式自动生成随机 IV，存储在文件头中
+- **完整性校验**：HMAC-SHA256 对文件头 + 密文进行签名，解密时验证。密钥错误或文件被篡改时会抛出异常
+- **本地处理**：所有操作在浏览器本地完成，文件不会上传到任何服务器
 
 ## 注意事项
 
