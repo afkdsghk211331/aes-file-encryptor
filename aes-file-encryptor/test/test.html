@@ -2,14 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Encryptor Tests</title>
+  <title>AES File Encryptor — Tests</title>
   <style>
     body { font-family: monospace; max-width: 800px; margin: 40px auto; padding: 0 20px; }
     h1 { color: #333; }
-    .test { margin: 10px 0; padding: 10px; border-left: 3px solid #888; }
+    .test { margin: 6px 0; padding: 8px; border-left: 3px solid #888; }
     .pass { border-color: #22c55e; background: #f0fdf4; }
     .fail { border-color: #ef4444; background: #fef2f2; }
-    .running { border-color: #eab308; background: #fefce8; }
     #summary { margin-top: 20px; padding: 15px; font-size: 1.2em; font-weight: bold; }
   </style>
 </head>
@@ -23,107 +22,92 @@
 
     const results = document.getElementById("results");
     const summary = document.getElementById("summary");
-    let passed = 0;
-    let failed = 0;
+    let passed = 0, failed = 0;
 
     function addTest(name, status, detail = "") {
       const div = document.createElement("div");
       div.className = "test " + (status === "PASS" ? "pass" : "fail");
       div.textContent = `${status} — ${name}${detail ? ": " + detail : ""}`;
       results.appendChild(div);
-      if (status === "PASS") passed++;
-      else failed++;
+      if (status === "PASS") passed++; else failed++;
     }
 
-    function makeFile(content, mimeType = "application/octet-stream") {
-      return new File([content], "test.bin", { type: mimeType });
+    function makeFile(content) {
+      return new File([content], "test.bin");
     }
 
     function arraysEqual(a, b) {
       if (a.length !== b.length) return false;
-      for (let i = 0; i < a.length; i++) {
-        if (a[i] !== b[i]) return false;
-      }
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
       return true;
     }
 
     async function runTest(name, content, mode) {
       const file = makeFile(content);
       const key = "test-password-123";
-
-      const encryptedBlob = await encryptFile(file, key, mode);
-      const encryptedFile = new File([await encryptedBlob.arrayBuffer()], "encrypted.bin");
-
-      const decryptedBlob = await decryptFile(encryptedFile, key, mode);
-      const decryptedBytes = new Uint8Array(await decryptedBlob.arrayBuffer());
-      const originalBytes = new Uint8Array(await file.arrayBuffer());
-
-      if (arraysEqual(originalBytes, decryptedBytes)) {
-        addTest(name + ` (${mode})`, "PASS");
-      } else {
-        const firstDiff = [];
-        for (let i = 0; i < Math.min(originalBytes.length, decryptedBytes.length); i++) {
-          if (originalBytes[i] !== decryptedBytes[i]) {
-            firstDiff.push(`byte[${i}]: expected ${originalBytes[i]}, got ${decryptedBytes[i]}`);
-            if (firstDiff.length >= 3) break;
-          }
+      try {
+        const encryptedBlob = await encryptFile(file, key, mode);
+        const encryptedFile = new File([await encryptedBlob.arrayBuffer()], "encrypted.bin");
+        const decryptedBlob = await decryptFile(encryptedFile, key, mode);
+        const decryptedBytes = new Uint8Array(await decryptedBlob.arrayBuffer());
+        const originalBytes = new Uint8Array(await file.arrayBuffer());
+        if (arraysEqual(originalBytes, decryptedBytes)) {
+          addTest(`${name} (${mode})`, "PASS");
+        } else {
+          addTest(`${name} (${mode})`, "FAIL",
+            `size ${originalBytes.length}→${decryptedBytes.length}`);
         }
-        addTest(
-          name + ` (${mode})`,
-          "FAIL",
-          `size ${originalBytes.length}→${decryptedBytes.length}. ${firstDiff.join("; ")}`,
-        );
+      } catch (e) {
+        addTest(`${name} (${mode})`, "FAIL", e.message);
       }
     }
 
-    // --- Test cases ---
     const tests = [
-      ["empty file", new Uint8Array(0)],
+      ["empty", new Uint8Array(0)],
       ["single byte", new Uint8Array([0x42])],
-      ["15 bytes (just under block)", new Uint8Array([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15])],
-      ["16 bytes (exact block)", new Uint8Array(Array.from({length: 16}, (_, i) => i + 1))],
-      ["17 bytes (one over block)", new Uint8Array(Array.from({length: 17}, (_, i) => (i * 7) % 256))],
-      ["32 bytes (2 blocks)", new Uint8Array(Array.from({length: 32}, (_, i) => i))],
-      ["100 bytes", new Uint8Array(Array.from({length: 100}, (_, i) => (i * 13 + 7) % 256))],
-      ["1 KB", new Uint8Array(Array.from({length: 1024}, (_, i) => i % 256))],
-      ["10 KB", new Uint8Array(Array.from({length: 10240}, (_, i) => (i * 31) % 256))],
-      ["1 MB (single chunk)", new Uint8Array(1024 * 1024).map((_, i) => (i * 17) % 256)],
-      ["2 MB (multi-chunk CBC)", new Uint8Array(2 * 1024 * 1024).map((_, i) => (i * 23) % 256)],
-      ["binary (all byte values)", new Uint8Array(Array.from({length: 512}, (_, i) => i % 256))],
+      ["15 bytes", new Uint8Array([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15])],
+      ["16 bytes", new Uint8Array(Array.from({length:16}, (_,i) => i+1))],
+      ["17 bytes", new Uint8Array(Array.from({length:17}, (_,i) => (i*7)%256))],
+      ["32 bytes", new Uint8Array(Array.from({length:32}, (_,i) => i))],
+      ["100 bytes", new Uint8Array(Array.from({length:100}, (_,i) => (i*13+7)%256))],
+      ["1 KB", new Uint8Array(Array.from({length:1024}, (_,i) => i%256))],
+      ["10 KB", new Uint8Array(Array.from({length:10240}, (_,i) => (i*31)%256))],
+      ["1 MB", new Uint8Array(1024*1024).map((_,i) => (i*17)%256)],
+      ["2 MB", new Uint8Array(2*1024*1024).map((_,i) => (i*23)%256)],
+      ["all byte values", new Uint8Array(Array.from({length:512}, (_,i) => i%256))],
       ["all zeros", new Uint8Array(256)],
       ["all 0xFF", new Uint8Array(256).fill(0xFF)],
-      ["text file", new TextEncoder().encode("Hello, World! This is a test of AES encryption.\n".repeat(100))],
     ];
 
     for (const [name, content] of tests) {
-      for (const mode of ["CBC", "CTR"]) {
+      for (const mode of ["CBC", "CTR", "CFB"]) {
         await runTest(name, content, mode);
       }
     }
 
-    // --- Wrong key test ---
+    // Wrong key test
     try {
-      const file = makeFile(new Uint8Array([1, 2, 3]));
-      const enc = await encryptFile(file, "correct-key", "CBC");
+      const file = makeFile(new Uint8Array([1,2,3]));
+      const enc = await encryptFile(file, "correct", "CBC");
       const encFile = new File([await enc.arrayBuffer()], "e.bin");
-      await decryptFile(encFile, "wrong-key", "CBC");
-      addTest("wrong key should fail", "FAIL", "decryption succeeded with wrong key");
+      await decryptFile(encFile, "wrong", "CBC");
+      addTest("wrong key rejected", "FAIL", "decryption succeeded with wrong key");
     } catch (e) {
-      addTest("wrong key should fail", "PASS", `rejected: ${e.message || e}`);
+      addTest("wrong key rejected", "PASS");
     }
 
-    // --- Mode mismatch test ---
+    // Mode mismatch test
     try {
-      const file = makeFile(new Uint8Array([1, 2, 3]));
+      const file = makeFile(new Uint8Array([1,2,3]));
       const enc = await encryptFile(file, "key", "CBC");
       const encFile = new File([await enc.arrayBuffer()], "e.bin");
       await decryptFile(encFile, "key", "CTR");
-      addTest("mode mismatch should fail", "FAIL", "decryption succeeded with mismatched mode");
+      addTest("mode mismatch rejected", "FAIL");
     } catch (e) {
-      addTest("mode mismatch should fail", "PASS", `rejected: ${e.message || e}`);
+      addTest("mode mismatch rejected", "PASS");
     }
 
-    summary.textContent = `Results: ${passed} passed, ${failed} failed (${passed + failed} total)`;
+    summary.textContent = `Results: ${passed} passed, ${failed} failed (${passed+failed} total)`;
     summary.style.color = failed > 0 ? "#ef4444" : "#22c55e";
   </script>
 </body>

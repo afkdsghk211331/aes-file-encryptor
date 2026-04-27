@@ -178,7 +178,7 @@ function ModeSelector({
 }) {
   return (
     <div className="flex gap-2">
-      {(["CBC", "CTR"] as EncryptionMode[]).map((m) => (
+      {(["CBC", "CTR", "CFB"] as EncryptionMode[]).map((m) => (
         <button
           key={m}
           className={`flex-1 py-2 px-4 rounded-lg font-semibold transition-colors ${
@@ -311,59 +311,74 @@ export default function App() {
   const [benchResults, setBenchResults] = useState<{
     cbc: BenchResult;
     ctr: BenchResult;
+    cfb: BenchResult;
     action: Action;
     fileName: string;
   } | null>(null);
   const [error, setError] = useState("");
+  const [progress, setProgress] = useState<number | null>(null);
 
   const handleProcess = async () => {
     if (!file || !key) return;
     setBusy(true);
+    setProgress(0);
     setError("");
     setResult(null);
     try {
       const fn = action === "encrypt" ? encryptFile : decryptFile;
       const t0 = performance.now();
-      const blob = await fn(file, key, mode);
+      const blob = await fn(file, key, mode, { onProgress: setProgress });
       const elapsed = performance.now() - t0;
       setResult({ blob, duration: elapsed, action, mode, fileName: file.name });
+      setProgress(1);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   };
 
   const handleBenchmark = async () => {
     if (!file || !key) return;
     setBusy(true);
+    setProgress(0);
     setError("");
     setBenchResults(null);
     try {
       const fn = action === "encrypt" ? encryptFile : decryptFile;
-      const t0 = performance.now();
-      const cbcBlob = await fn(file, key, "CBC");
-      const cbcTime = performance.now() - t0;
-      const t1 = performance.now();
-      const ctrBlob = await fn(file, key, "CTR");
-      const ctrTime = performance.now() - t1;
+      const modes: EncryptionMode[] = ["CBC", "CTR", "CFB"];
+      const results: Record<EncryptionMode, BenchResult> = {} as Record<EncryptionMode, BenchResult>;
+      for (let i = 0; i < modes.length; i++) {
+        const m = modes[i];
+        const t0 = performance.now();
+        const blob = await fn(file, key, m, { onProgress: (p: number) => setProgress((i + p) / modes.length) });
+        results[m] = { mode: m, duration: performance.now() - t0, blob };
+      }
       setBenchResults({
-        cbc: { mode: "CBC", duration: cbcTime, blob: cbcBlob },
-        ctr: { mode: "CTR", duration: ctrTime, blob: ctrBlob },
+        cbc: results.CBC,
+        ctr: results.CTR,
+        cfb: results.CFB,
         action,
         fileName: file.name,
       });
+      setProgress(1);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   };
 
   const canRun = file !== null && key.length > 0 && !busy;
-  const faster =
+  const fastest =
     benchResults &&
-    (benchResults.cbc.duration < benchResults.ctr.duration ? "CBC" : "CTR");
+    (["CBC", "CTR", "CFB"] as EncryptionMode[]).reduce((a, b) =>
+      benchResults[a.toLowerCase() as keyof Omit<typeof benchResults, "action" | "fileName">].duration <
+      benchResults[b.toLowerCase() as keyof Omit<typeof benchResults, "action" | "fileName">].duration
+        ? a : b,
+    );
 
   const lockIcon = (
     <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -390,7 +405,7 @@ export default function App() {
                 AES File Encryptor
               </h1>
               <p className="text-gray-500 dark:text-gray-400">
-                Encrypt and decrypt files in your browser with AES-CBC and AES-CTR
+                Encrypt and decrypt files in your browser with AES-CBC, AES-CTR and AES-CFB
               </p>
             </div>
             <ThemeToggle />
@@ -474,9 +489,25 @@ export default function App() {
               }`}
               onClick={handleBenchmark}
             >
-              {busy ? "Running..." : "Compare CBC vs CTR"}
+              {busy ? "Running..." : "Compare All 3 Modes"}
             </button>
           </div>
+
+          {/* Progress bar */}
+          {progress !== null && (
+            <div className="space-y-1">
+              <div className="flex justify-between text-sm text-gray-500 dark:text-gray-400">
+                <span>{busy ? (action === "encrypt" ? "Encrypting..." : "Decrypting...") : "Done"}</span>
+                <span className="font-mono">{Math.round(progress * 100)}%</span>
+              </div>
+              <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-cyan-500 rounded-full transition-all duration-200"
+                  style={{ width: `${progress * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
 
           {/* Error */}
           {error && (
@@ -506,7 +537,7 @@ export default function App() {
           {benchResults && (
             <div className="space-y-4">
               <h2 className="text-xl font-bold text-gray-900 dark:text-white">Performance Comparison</h2>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-3">
                 <BenchCard
                   result={benchResults.cbc}
                   action={benchResults.action}
@@ -517,21 +548,22 @@ export default function App() {
                   action={benchResults.action}
                   fileName={benchResults.fileName}
                 />
+                <BenchCard
+                  result={benchResults.cfb}
+                  action={benchResults.action}
+                  fileName={benchResults.fileName}
+                />
               </div>
               <div className="bg-gray-100 dark:bg-gray-800/60 rounded-xl p-4 text-center">
-                <span className="text-gray-500 dark:text-gray-400">Faster: </span>
-                <span className="font-bold text-green-600 dark:text-green-400">AES-{faster}</span>
-                <span className="text-gray-500 dark:text-gray-400"> (</span>
-                <span className="font-mono text-cyan-600 dark:text-cyan-300">
-                  {formatMs(Math.abs(benchResults.cbc.duration - benchResults.ctr.duration))}
-                </span>
-                <span className="text-gray-500 dark:text-gray-400"> difference)</span>
+                <span className="text-gray-500 dark:text-gray-400">Fastest: </span>
+                <span className="font-bold text-green-600 dark:text-green-400">AES-{fastest}</span>
               </div>
               <div className="bg-gray-100 dark:bg-gray-800/60 rounded-xl p-4">
                 <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-2">Speed breakdown</h3>
-                {[benchResults.cbc, benchResults.ctr].map((r) => {
-                  const max = Math.max(benchResults.cbc.duration, benchResults.ctr.duration);
+                {[benchResults.cbc, benchResults.ctr, benchResults.cfb].map((r) => {
+                  const max = Math.max(benchResults.cbc.duration, benchResults.ctr.duration, benchResults.cfb.duration);
                   const pct = (r.duration / max) * 100;
+                  const barColor = r.mode === "CBC" ? "bg-cyan-500" : r.mode === "CTR" ? "bg-violet-500" : "bg-amber-500";
                   return (
                     <div key={r.mode} className="mb-2 last:mb-0">
                       <div className="flex justify-between text-sm text-gray-500 dark:text-gray-400 mb-1">
@@ -540,9 +572,7 @@ export default function App() {
                       </div>
                       <div className="h-2 bg-gray-300 dark:bg-gray-700 rounded-full overflow-hidden">
                         <div
-                          className={`h-full rounded-full transition-all ${
-                            r.mode === "CBC" ? "bg-cyan-500" : "bg-violet-500"
-                          }`}
+                          className={`h-full rounded-full transition-all ${barColor}`}
                           style={{ width: `${pct}%` }}
                         />
                       </div>
