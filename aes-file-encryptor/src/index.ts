@@ -1,10 +1,9 @@
 /**
  * aes-file-encryptor — AES file encryption/decryption library.
  *
- * Supports AES-CBC, AES-CTR, and AES-CFB-128 modes via the Web Crypto API.
- * CFB mode uses a minimal AES-128 JS implementation for single-block
- * encryption (Web Crypto lacks AES-ECB).
- * Designed for browser use with chunked processing to handle large files.
+ * All three modes (CBC, CTR, CFB) use a minimal AES-128 JS implementation.
+ * Web Crypto is used only for PBKDF2 key derivation, HKDF expansion,
+ * HMAC-SHA256 integrity, and crypto.getRandomValues for salt/IV generation.
  *
  * File format (all modes):
  * ┌──────┬──────────┬──────────┬─────────────┬──────────┬──────────┐
@@ -28,10 +27,10 @@
 // =========================================================================
 
 const CHUNK_SIZE = 1024 * 1024; // 1 MiB
+const AES_BLOCK = 16;
 
-/** Cast Uint8Array to BufferSource for Web Crypto API (TS 5.4 compat) */
-function bs(buf: Uint8Array): BufferSource {
-  return buf.buffer as ArrayBuffer;
+function toBuf(buf: Uint8Array): BufferSource {
+  return (buf.buffer as ArrayBuffer).slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
 const MODE_CBC = 0x01;
@@ -44,79 +43,46 @@ const HMAC_SIZE = 32;
 const PBKDF2_ITERATIONS = 100_000;
 
 // =========================================================================
-// Key derivation
+// Key derivation (Web Crypto — PBKDF2 / HKDF / HMAC)
 // =========================================================================
 
-async function deriveKey(
+async function deriveMasterKey(
   passphrase: string,
   salt: Uint8Array,
-): Promise<CryptoKey> {
+): Promise<Uint8Array> {
   const encoder = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(passphrase),
-    { name: "PBKDF2" },
-    false,
-    ["deriveKey"],
+  const km = await crypto.subtle.importKey(
+    "raw", encoder.encode(passphrase), "PBKDF2", false, ["deriveBits"],
   );
-  return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt: bs(salt), iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
-    keyMaterial,
-    { name: "AES-CTR", length: 256 },
-    true, // extractable — needed for HKDF sub-key derivation
-    ["encrypt", "decrypt"],
-  );
+  return new Uint8Array(await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: toBuf(salt), iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
+    km, 128,
+  ));
 }
 
-/** Per-chunk AES-CBC sub-key for CBC mode (HKDF from master key) */
 async function deriveChunkKey(
-  masterKey: CryptoKey,
+  masterKey: Uint8Array,
   chunkIndex: number,
-): Promise<CryptoKey> {
-  const rawKey = await crypto.subtle.exportKey("raw", masterKey);
+): Promise<Uint8Array> {
   const info = new Uint8Array([(chunkIndex >>> 8) & 0xff, chunkIndex & 0xff]);
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    rawKey,
-    { name: "HKDF" },
-    false,
-    ["deriveKey"],
-  );
-  return crypto.subtle.deriveKey(
-    { name: "HKDF", salt: bs(new Uint8Array(0)), info, hash: "SHA-256" },
-    keyMaterial,
-    { name: "AES-CBC", length: 256 },
-    false,
-    ["encrypt", "decrypt"],
-  );
+  const km = await crypto.subtle.importKey("raw", toBuf(masterKey), "HKDF", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits(
+    { name: "HKDF", salt: new Uint8Array(0), info: toBuf(info), hash: "SHA-256" },
+    km, 128,
+  ));
 }
 
-// =========================================================================
-// HMAC integrity
-// =========================================================================
-
-async function deriveHmacKey(masterKey: CryptoKey): Promise<CryptoKey> {
-  const rawKey = await crypto.subtle.exportKey("raw", masterKey);
+async function deriveHmacKey(masterKey: Uint8Array): Promise<CryptoKey> {
   const info = new TextEncoder().encode("hmac");
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    rawKey,
-    { name: "HKDF" },
-    false,
-    ["deriveKey"],
-  );
+  const km = await crypto.subtle.importKey("raw", toBuf(masterKey), "HKDF", false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
-    { name: "HKDF", salt: bs(new Uint8Array(0)), info, hash: "SHA-256" },
-    keyMaterial,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign", "verify"],
+    { name: "HKDF", salt: new Uint8Array(0), info: toBuf(info), hash: "SHA-256" },
+    km, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"],
   );
 }
 
 async function computeHmac(key: CryptoKey, data: Uint8Array): Promise<Uint8Array> {
-  const sig = await crypto.subtle.sign("HMAC", key, bs(data));
-  return new Uint8Array(sig);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, toBuf(data)));
 }
 
 async function verifyHmac(
@@ -124,7 +90,7 @@ async function verifyHmac(
   data: Uint8Array,
   expected: Uint8Array,
 ): Promise<void> {
-  const sig = await crypto.subtle.sign("HMAC", key, bs(data));
+  const sig = await crypto.subtle.sign("HMAC", key, toBuf(data));
   const actual = new Uint8Array(sig);
   if (actual.length !== expected.length) throw new Error("Integrity check failed");
   let diff = 0;
@@ -155,10 +121,9 @@ function pkcs7Unpad(data: Uint8Array): Uint8Array {
 }
 
 // =========================================================================
-// AES-128 in JS (for CFB mode block cipher — Web Crypto has no ECB)
+// AES-128 Core (pure JS)
 // =========================================================================
 
-// S-box
 const SBOX = new Uint8Array([
   0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
   0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
@@ -178,131 +143,128 @@ const SBOX = new Uint8Array([
   0xe0,0x8f,0x9f,0x83,0x8c,0x5b,0x41,0xc0,0xc1,0xb0,0xf4,0xf1,0x39,0x79,0xe0,0xd5,
 ]);
 
-/** AES-128 key expansion */
-function aes128KeyExpand(key: Uint8Array): Uint8Array[] {
-  const nk = 4; // 128-bit key
-  const nr = 10; // rounds
-  const words: Uint8Array[] = [];
-  for (let i = 0; i < nk; i++) {
-    words.push(key.slice(i * 4, (i + 1) * 4));
-  }
-  for (let i = nk; i < nk * (nr + 1); i++) {
-    const prev = words[i - 1];
-    const word = new Uint8Array(4);
-    if (i % nk === 0) {
-      // RotWord + SubWord + Rcon
-      const tmp = new Uint8Array([prev[1], prev[2], prev[3], prev[0]]);
-      for (let j = 0; j < 4; j++) word[j] = SBOX[tmp[j]];
-      const rcon = [0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36];
-      word[0] ^= rcon[i / nk - 1];
-    } else {
-      word.set(prev);
-    }
-    const w = new Uint8Array(4);
-    for (let j = 0; j < 4; j++) w[j] = words[i - nk][j] ^ word[j];
-    words.push(w);
-  }
-  // Group into round keys (each 16 bytes)
-  const roundKeys: Uint8Array[] = [];
-  for (let r = 0; r <= nr; r++) {
-    const rk = new Uint8Array(16);
-    for (let i = 0; i < 4; i++) rk.set(words[r * nk + i], i * 4);
-    roundKeys.push(rk);
-  }
-  return roundKeys;
+const INV_SBOX = new Uint8Array([
+  0x52,0x09,0x6a,0xd5,0x30,0x36,0xa5,0x38,0xbf,0x40,0xa3,0x9e,0x81,0xf3,0xd7,0xfb,
+  0x7c,0xe3,0x39,0x82,0x9b,0x2f,0xff,0x87,0x34,0x8e,0x43,0x44,0xc4,0xde,0xe9,0xcb,
+  0x54,0x7b,0x94,0x32,0xa6,0xc2,0x23,0x3d,0xee,0x4c,0x95,0x0b,0x42,0xfa,0xc3,0x4e,
+  0x08,0x2e,0xa1,0x66,0x28,0xd9,0x24,0xb2,0x76,0x5b,0xa2,0x49,0x6d,0x8b,0xd1,0x25,
+  0x72,0xf8,0xf6,0x64,0x86,0x68,0x98,0x16,0xd4,0xa4,0x5c,0xcc,0x5d,0x65,0xb6,0x92,
+  0x6c,0x70,0x48,0x50,0xfd,0xed,0xb9,0xda,0x5e,0x15,0x46,0x57,0xa7,0x8d,0x9d,0x84,
+  0x90,0xd8,0xab,0x00,0x8c,0xbc,0xd3,0x0a,0xf7,0xe4,0x58,0x05,0xb8,0xb3,0x45,0x06,
+  0xd0,0x2c,0x1e,0x8f,0xca,0x3f,0x0f,0x02,0xc1,0xaf,0xbd,0x03,0x01,0x13,0x8a,0x6b,
+  0x3a,0x91,0x11,0x41,0x4f,0x67,0xdc,0xea,0x97,0xf2,0xcf,0xce,0xf0,0xb4,0xe6,0x73,
+  0x96,0xac,0x74,0x22,0xe7,0xad,0x35,0x85,0xe2,0xf9,0x37,0xe8,0x1c,0x75,0xdf,0x6e,
+  0x47,0xf1,0x1a,0x71,0x1d,0x29,0xc5,0x89,0x6f,0xb7,0x62,0x0e,0xaa,0x18,0xbe,0x1b,
+  0xfc,0x56,0x3e,0x4b,0xc6,0xd2,0x79,0x20,0x9a,0xdb,0xc0,0xfe,0x78,0xcd,0x5a,0xf4,
+  0x1f,0xdd,0xa8,0x33,0x88,0x07,0xc7,0x31,0xb1,0x12,0x10,0x59,0x27,0x80,0xec,0x5f,
+  0x60,0x51,0x7f,0xa9,0x19,0xb5,0x4a,0x0d,0x2d,0xe5,0x7a,0x9f,0x93,0xc9,0x9c,0xef,
+  0xa0,0xe0,0x3b,0x4d,0xae,0x2a,0xf5,0xb0,0xc8,0xeb,0xbb,0x3c,0x83,0x53,0x99,0x61,
+  0x17,0x2b,0x04,0x7e,0xba,0x77,0xd6,0x26,0xe1,0x69,0x14,0x63,0x55,0x21,0x0c,0x7d,
+]);
+
+const RCON = [0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36];
+
+function gmul2(a: number): number { return (a << 1) ^ (a & 0x80 ? 0x1b : 0); }
+function gmul3(a: number): number { return gmul2(a) ^ a; }
+function gmul9(a: number): number { return gmul2(gmul2(gmul2(a))) ^ a; }
+function gmul11(a: number): number { return gmul2(gmul2(gmul2(a)) ^ a) ^ a; }
+function gmul13(a: number): number { return gmul2(gmul2(gmul2(a))) ^ gmul2(gmul2(a)) ^ a; }
+function gmul14(a: number): number { return gmul2(gmul2(gmul2(a))) ^ gmul2(gmul2(a)) ^ gmul2(a); }
+
+function xor16(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const r = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) r[i] = a[i] ^ b[i];
+  return r;
 }
 
-/** AES-128 single-block encrypt (16 bytes input → 16 bytes output) */
-function aes128EncryptBlock(roundKeys: Uint8Array[], block: Uint8Array): Uint8Array {
-  const nr = 10;
-  // State: column-major 4x4
-  const s = new Uint8Array(16);
-  for (let i = 0; i < 16; i++) s[i] = block[i] ^ roundKeys[0][i];
+function aesKeyExpand(key: Uint8Array): Uint8Array[] {
+  const nk = 4, nr = 10;
+  const w: Uint8Array[] = [];
+  for (let i = 0; i < nk; i++) w.push(key.slice(i * 4, (i + 1) * 4));
+  for (let i = nk; i < nk * (nr + 1); i++) {
+    const t = new Uint8Array(w[i - 1]);
+    if (i % nk === 0) {
+      const tmp = t[0]; t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = tmp;
+      for (let j = 0; j < 4; j++) t[j] = SBOX[t[j]];
+      t[0] ^= RCON[i / nk - 1];
+    }
+    const out = new Uint8Array(4);
+    for (let j = 0; j < 4; j++) out[j] = w[i - nk][j] ^ t[j];
+    w.push(out);
+  }
+  const rk: Uint8Array[] = [];
+  for (let r = 0; r <= nr; r++) {
+    const row = new Uint8Array(16);
+    for (let i = 0; i < 4; i++) row.set(w[r * nk + i], i * 4);
+    rk.push(row);
+  }
+  return rk;
+}
 
-  for (let r = 1; r < nr; r++) {
-    // SubBytes
+/** AES-128 encrypt one 16-byte block */
+function aesEncryptBlock(rk: Uint8Array[], block: Uint8Array): Uint8Array {
+  const s = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) s[i] = block[i] ^ rk[0][i];
+  for (let r = 1; r < 10; r++) {
     for (let i = 0; i < 16; i++) s[i] = SBOX[s[i]];
-    // ShiftRows
-    const tmp = new Uint8Array(16);
-    tmp.set(s);
-    s[1] = tmp[5];  s[5] = tmp[9];  s[9]  = tmp[13]; s[13] = tmp[1];
-    s[2] = tmp[10]; s[6] = tmp[14]; s[10] = tmp[2];   s[14] = tmp[6];
-    s[3] = tmp[15]; s[7] = tmp[3];  s[11] = tmp[7];   s[15] = tmp[11];
-    // MixColumns
+    const t = new Uint8Array(s);
+    s[1] = t[5]; s[5] = t[9]; s[9] = t[13]; s[13] = t[1];
+    s[2] = t[10]; s[6] = t[14]; s[10] = t[2]; s[14] = t[6];
+    s[3] = t[15]; s[7] = t[3]; s[11] = t[7]; s[15] = t[11];
     for (let c = 0; c < 4; c++) {
       const i = c * 4;
-      const s0 = s[i], s1 = s[i+1], s2 = s[i+2], s3 = s[i+3];
-      s[i]   = gmul2(s0) ^ gmul3(s1) ^ s2 ^ s3;
-      s[i+1] = s0 ^ gmul2(s1) ^ gmul3(s2) ^ s3;
-      s[i+2] = s0 ^ s1 ^ gmul2(s2) ^ gmul3(s3);
-      s[i+3] = gmul3(s0) ^ s1 ^ s2 ^ gmul2(s3);
+      const a = s[i], b = s[i + 1], cc = s[i + 2], d = s[i + 3];
+      s[i] = gmul2(a) ^ gmul3(b) ^ cc ^ d;
+      s[i + 1] = a ^ gmul2(b) ^ gmul3(cc) ^ d;
+      s[i + 2] = a ^ b ^ gmul2(cc) ^ gmul3(d);
+      s[i + 3] = gmul3(a) ^ b ^ cc ^ gmul2(d);
     }
-    // AddRoundKey
-    for (let i = 0; i < 16; i++) s[i] ^= roundKeys[r][i];
+    for (let i = 0; i < 16; i++) s[i] ^= rk[r][i];
   }
-  // Final round: SubBytes + ShiftRows + AddRoundKey (no MixColumns)
   for (let i = 0; i < 16; i++) s[i] = SBOX[s[i]];
-  const tmp = new Uint8Array(16);
-  tmp.set(s);
-  s[1] = tmp[5];  s[5] = tmp[9];  s[9]  = tmp[13]; s[13] = tmp[1];
-  s[2] = tmp[10]; s[6] = tmp[14]; s[10] = tmp[2];   s[14] = tmp[6];
-  s[3] = tmp[15]; s[7] = tmp[3];  s[11] = tmp[7];   s[15] = tmp[11];
-  for (let i = 0; i < 16; i++) s[i] ^= roundKeys[nr][i];
+  const t = new Uint8Array(s);
+  s[1] = t[5]; s[5] = t[9]; s[9] = t[13]; s[13] = t[1];
+  s[2] = t[10]; s[6] = t[14]; s[10] = t[2]; s[14] = t[6];
+  s[3] = t[15]; s[7] = t[3]; s[11] = t[7]; s[15] = t[11];
+  for (let i = 0; i < 16; i++) s[i] ^= rk[10][i];
   return s;
 }
 
-/** GF(2^8) multiplication helpers */
-function gmul2(a: number): number {
-  return (a << 1) ^ (a & 0x80 ? 0x1b : 0);
-}
-function gmul3(a: number): number {
-  return gmul2(a) ^ a;
-}
-
-/**
- * AES-128-CFB-128 encryption/decryption.
- * Processes the entire plaintext in 16-byte blocks sequentially.
- * For large files, this runs in a single async pass — memory-efficient
- * since it outputs ciphertext incrementally.
- */
-async function processCFB(
-  masterKey: CryptoKey,
-  plaintext: Uint8Array,
-  iv: Uint8Array,
-): Promise<Uint8Array> {
-  const rawKey = await crypto.subtle.exportKey("raw", masterKey);
-  const roundKeys = aes128KeyExpand(new Uint8Array(rawKey));
-  const result = new Uint8Array(plaintext.length);
-  let feedback = new Uint8Array(iv); // IV for first block
-
-  for (let offset = 0; offset < plaintext.length; offset += 16) {
-    const len = Math.min(16, plaintext.length - offset);
-    // Encrypt feedback block → keystream
-    const keystream = aes128EncryptBlock(roundKeys, feedback);
-    // XOR with plaintext (may be < 16 bytes for last block)
-    for (let i = 0; i < len; i++) {
-      result[offset + i] = plaintext[offset + i] ^ keystream[i];
-    }
-    // Feedback for next block is the ciphertext (truncated for last partial block)
-    if (len < 16) {
-      const next = new Uint8Array(16);
-      next.set(result.slice(offset, offset + len));
-      // Pad remainder with original feedback bytes (CFB rule)
-      next.set(feedback.slice(len), len);
-      feedback = next;
-    } else {
-      feedback = result.slice(offset, offset + 16);
+/** AES-128 decrypt one 16-byte block */
+function aesDecryptBlock(rk: Uint8Array[], block: Uint8Array): Uint8Array {
+  const s = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) s[i] = block[i] ^ rk[10][i];
+  for (let r = 9; r > 0; r--) {
+    const t = new Uint8Array(s);
+    s[1] = t[13]; s[5] = t[1]; s[9] = t[5]; s[13] = t[9];
+    s[2] = t[10]; s[6] = t[14]; s[10] = t[2]; s[14] = t[6];
+    s[3] = t[7]; s[11] = t[15]; s[15] = t[3];
+    for (let i = 0; i < 16; i++) s[i] = INV_SBOX[s[i]];
+    for (let i = 0; i < 16; i++) s[i] ^= rk[r][i];
+    for (let c = 0; c < 4; c++) {
+      const i = c * 4;
+      const a = s[i], b = s[i + 1], cc = s[i + 2], d = s[i + 3];
+      s[i] = gmul14(a) ^ gmul11(b) ^ gmul13(cc) ^ gmul9(d);
+      s[i + 1] = gmul9(a) ^ gmul14(b) ^ gmul11(cc) ^ gmul13(d);
+      s[i + 2] = gmul13(a) ^ gmul9(b) ^ gmul14(cc) ^ gmul11(d);
+      s[i + 3] = gmul11(a) ^ gmul13(b) ^ gmul9(cc) ^ gmul14(d);
     }
   }
-  return result;
+  const t = new Uint8Array(s);
+  s[1] = t[13]; s[5] = t[1]; s[9] = t[5]; s[13] = t[9];
+  s[2] = t[10]; s[6] = t[14]; s[10] = t[2]; s[14] = t[6];
+  s[3] = t[7]; s[11] = t[15]; s[15] = t[3];
+  for (let i = 0; i < 16; i++) s[i] = INV_SBOX[s[i]];
+  for (let i = 0; i < 16; i++) s[i] ^= rk[0][i];
+  return s;
 }
 
 // =========================================================================
-// CBC mode
+// CBC Mode (manual AES-128)
 // =========================================================================
 
 async function encryptCBC(
-  masterKey: CryptoKey,
+  masterKey: Uint8Array,
   plaintext: Uint8Array,
   onProgress?: (pct: number) => void,
 ): Promise<Uint8Array> {
@@ -313,154 +275,182 @@ async function encryptCBC(
     const start = i * CHUNK_SIZE;
     const end = Math.min(start + CHUNK_SIZE, plaintext.length);
     const chunk = plaintext.slice(start, end);
-
     const chunkKey = await deriveChunkKey(masterKey, i);
+
     const iv = crypto.getRandomValues(new Uint8Array(IV_SIZE));
     const padded = pkcs7Pad(chunk);
+    const rk = aesKeyExpand(chunkKey);
+    const ct = new Uint8Array(padded.length);
+    let prev: Uint8Array = iv;
 
-    const encrypted = await crypto.subtle.encrypt(
-      { name: "AES-CBC", iv: bs(iv) },
-      chunkKey,
-      bs(padded),
-    );
+    for (let off = 0; off < padded.length; off += AES_BLOCK) {
+      const ptBlock = padded.slice(off, off + AES_BLOCK);
+      const encBlock = aesEncryptBlock(rk, xor16(prev, ptBlock));
+      ct.set(encBlock, off);
+      prev = encBlock;
+    }
 
-    const buf = new Uint8Array(IV_SIZE + encrypted.byteLength);
+    const buf = new Uint8Array(IV_SIZE + ct.length);
     buf.set(iv, 0);
-    buf.set(new Uint8Array(encrypted), IV_SIZE);
+    buf.set(ct, IV_SIZE);
     parts.push(buf);
     onProgress?.((i + 1) / chunkCount);
   }
 
-  const chunkCountBuf = new Uint8Array(4);
-  new DataView(chunkCountBuf.buffer).setUint32(0, chunkCount, false);
-  return concatUint8Arrays([chunkCountBuf, ...parts]);
+  const cc = new Uint8Array(4);
+  new DataView(cc.buffer).setUint32(0, chunkCount, false);
+  return concat([cc, ...parts]);
 }
 
 async function decryptCBC(
-  masterKey: CryptoKey,
+  masterKey: Uint8Array,
   ciphertext: Uint8Array,
   onProgress?: (pct: number) => void,
 ): Promise<Uint8Array> {
   const chunkCount = new DataView(ciphertext.buffer).getUint32(0, false);
   const parts: Uint8Array[] = [];
   let offset = 4;
-  const fullChunkCtLen = CHUNK_SIZE + 16;
 
   for (let i = 0; i < chunkCount; i++) {
     const iv = ciphertext.slice(offset, offset + IV_SIZE);
     offset += IV_SIZE;
+    const chunkKey = await deriveChunkKey(masterKey, i);
 
-    const chunkDataLen = i < chunkCount - 1 ? fullChunkCtLen : ciphertext.length - offset;
-    const chunkCiphertext = ciphertext.slice(offset, offset + chunkDataLen);
+    const chunkDataLen = i < chunkCount - 1
+      ? CHUNK_SIZE + AES_BLOCK
+      : ciphertext.length - offset;
+    const ctChunk = ciphertext.slice(offset, offset + chunkDataLen);
     offset += chunkDataLen;
 
-    const chunkKey = await deriveChunkKey(masterKey, i);
-    const decrypted = await crypto.subtle.decrypt(
-      { name: "AES-CBC", iv: bs(iv) },
-      chunkKey,
-      bs(chunkCiphertext),
-    );
+    const rk = aesKeyExpand(chunkKey);
+    const blocks = ctChunk.length / AES_BLOCK;
+    const padded = new Uint8Array(ctChunk.length);
+    let prev = iv;
 
-    parts.push(pkcs7Unpad(new Uint8Array(decrypted)));
+    for (let b = 0; b < blocks; b++) {
+      const ctBlock = ctChunk.slice(b * AES_BLOCK, (b + 1) * AES_BLOCK);
+      const ptBlock = xor16(prev, aesDecryptBlock(rk, ctBlock));
+      padded.set(ptBlock, b * AES_BLOCK);
+      prev = ctBlock;
+    }
+
+    parts.push(pkcs7Unpad(padded));
     onProgress?.((i + 1) / chunkCount);
   }
 
-  return concatUint8Arrays(parts);
+  return concat(parts);
 }
 
 // =========================================================================
-// CTR mode
+// CTR Mode (manual AES-128)
 // =========================================================================
 
-async function encryptCTR(
-  key: CryptoKey,
-  plaintext: Uint8Array,
+async function processCTR(
+  masterKey: Uint8Array,
+  data: Uint8Array,
   iv: Uint8Array,
   onProgress?: (pct: number) => void,
 ): Promise<Uint8Array> {
-  const chunkCount = Math.max(1, Math.ceil(plaintext.length / CHUNK_SIZE));
+  const chunkCount = Math.max(1, Math.ceil(data.length / CHUNK_SIZE));
   const parts: Uint8Array[] = [];
-  let blockCount = 0;
+  let blockNo = 0;
+  const rk = aesKeyExpand(masterKey);
 
   for (let i = 0; i < chunkCount; i++) {
     const start = i * CHUNK_SIZE;
-    const end = Math.min(start + CHUNK_SIZE, plaintext.length);
-    const chunk = plaintext.slice(start, end);
+    const end = Math.min(start + CHUNK_SIZE, data.length);
+    const chunk = data.slice(start, end);
 
     const counter = new Uint8Array(IV_SIZE);
     counter.set(iv);
-    addBigUint64(counter, BigInt(blockCount));
+    const cv = new DataView(counter.buffer, counter.byteOffset + 8, 8);
+    cv.setBigUint64(0, BigInt(blockNo));
 
-    const encrypted = await crypto.subtle.encrypt(
-      { name: "AES-CTR", counter, length: 128 },
-      key,
-      bs(chunk),
-    );
+    const out = new Uint8Array(chunk.length);
+    for (let off = 0; off < chunk.length; off += AES_BLOCK) {
+      const len = Math.min(AES_BLOCK, chunk.length - off);
+      const ks = aesEncryptBlock(rk, counter);
+      for (let j = 0; j < len; j++) out[off + j] = chunk[off + j] ^ ks[j];
+      cv.setBigUint64(0, cv.getBigUint64(0) + 1n);
+    }
 
-    parts.push(new Uint8Array(encrypted));
-    blockCount += Math.ceil(chunk.length / 16);
+    parts.push(out);
+    blockNo += Math.ceil(chunk.length / AES_BLOCK);
     onProgress?.((i + 1) / chunkCount);
   }
 
-  return concatUint8Arrays(parts);
+  return concat(parts);
 }
 
-async function decryptCTR(
-  key: CryptoKey,
-  ciphertext: Uint8Array,
+// =========================================================================
+// CFB Mode (manual AES-128)
+// =========================================================================
+
+async function processCFB(
+  masterKey: Uint8Array,
+  data: Uint8Array,
   iv: Uint8Array,
-  onProgress?: (pct: number) => void,
+  decrypt: boolean,
 ): Promise<Uint8Array> {
-  return encryptCTR(key, ciphertext, iv, onProgress);
-}
+  const rk = aesKeyExpand(masterKey);
+  const result = new Uint8Array(data.length);
+  let feedback = new Uint8Array(iv);
 
-function addBigUint64(buf: Uint8Array, value: bigint): void {
-  const view = new DataView(buf.buffer, buf.byteOffset + 8, 8);
-  const current = view.getBigUint64(0);
-  view.setBigUint64(0, current + value);
-}
+  for (let off = 0; off < data.length; off += AES_BLOCK) {
+    const len = Math.min(AES_BLOCK, data.length - off);
+    const ks = aesEncryptBlock(rk, feedback);
+    for (let j = 0; j < len; j++) result[off + j] = data[off + j] ^ ks[j];
 
-// =========================================================================
-// CFB mode
-// =========================================================================
+    if (len < AES_BLOCK) {
+      const next = new Uint8Array(AES_BLOCK);
+      next.set(decrypt ? data.slice(off, off + len) : result.slice(off, off + len));
+      next.set(feedback.slice(len), len);
+      feedback = next;
+    } else {
+      feedback = decrypt
+        ? data.slice(off, off + AES_BLOCK)
+        : result.slice(off, off + AES_BLOCK);
+    }
+  }
+  return result;
+}
 
 async function encryptCFB(
-  masterKey: CryptoKey,
+  masterKey: Uint8Array,
   plaintext: Uint8Array,
   iv: Uint8Array,
   onProgress?: (pct: number) => void,
 ): Promise<Uint8Array> {
   const chunkCount = Math.max(1, Math.ceil(plaintext.length / CHUNK_SIZE));
   const parts: Uint8Array[] = [];
-  let offset = 0;
 
   for (let i = 0; i < chunkCount; i++) {
     const start = i * CHUNK_SIZE;
     const end = Math.min(start + CHUNK_SIZE, plaintext.length);
     const chunk = plaintext.slice(start, end);
+    const chunkKey = await deriveChunkKey(masterKey, i);
 
-    const chunkIv = i === 0 ? iv : parts[parts.length - 1].slice(-16);
-    const ctChunk = await processCFB(masterKey, chunk, chunkIv);
+    const chunkIv = i === 0 ? iv : parts[parts.length - 1].slice(-AES_BLOCK);
+    const ct = await processCFB(chunkKey, chunk, chunkIv, false);
 
     if (i === 0) {
-      const buf = new Uint8Array(IV_SIZE + ctChunk.length);
+      const buf = new Uint8Array(IV_SIZE + ct.length);
       buf.set(iv, 0);
-      buf.set(ctChunk, IV_SIZE);
+      buf.set(ct, IV_SIZE);
       parts.push(buf);
     } else {
-      parts.push(ctChunk);
+      parts.push(ct);
     }
-    offset += chunk.length;
     onProgress?.((i + 1) / chunkCount);
   }
 
-  const chunkCountBuf = new Uint8Array(4);
-  new DataView(chunkCountBuf.buffer).setUint32(0, chunkCount, false);
-  return concatUint8Arrays([chunkCountBuf, ...parts]);
+  const cc = new Uint8Array(4);
+  new DataView(cc.buffer).setUint32(0, chunkCount, false);
+  return concat([cc, ...parts]);
 }
 
 async function decryptCFB(
-  masterKey: CryptoKey,
+  masterKey: Uint8Array,
   ciphertext: Uint8Array,
   _iv: Uint8Array,
   onProgress?: (pct: number) => void,
@@ -468,36 +458,37 @@ async function decryptCFB(
   const chunkCount = new DataView(ciphertext.buffer).getUint32(0, false);
   const parts: Uint8Array[] = [];
   let offset = 4;
+  let prevCtChunk: Uint8Array | null = null;
 
   for (let i = 0; i < chunkCount; i++) {
     let chunkIv: Uint8Array;
-    let ctChunk: Uint8Array;
-
     if (i === 0) {
       chunkIv = ciphertext.slice(offset, offset + IV_SIZE);
       offset += IV_SIZE;
     } else {
-      chunkIv = parts[parts.length - 1]; // last 16 bytes of previous plaintext = ciphertext
+      chunkIv = prevCtChunk!.slice(-AES_BLOCK);
     }
 
     const chunkDataLen = i < chunkCount - 1 ? CHUNK_SIZE : ciphertext.length - offset;
-    ctChunk = ciphertext.slice(offset, offset + chunkDataLen);
+    const ctChunk = ciphertext.slice(offset, offset + chunkDataLen);
     offset += chunkDataLen;
 
-    const ptChunk = await processCFB(masterKey, ctChunk, chunkIv);
+    const chunkKey = await deriveChunkKey(masterKey, i);
+    const ptChunk = await processCFB(chunkKey, ctChunk, chunkIv, true);
     parts.push(ptChunk);
+    prevCtChunk = ctChunk;
     onProgress?.((i + 1) / chunkCount);
   }
 
-  return concatUint8Arrays(parts);
+  return concat(parts);
 }
 
 // =========================================================================
 // Helpers
 // =========================================================================
 
-function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {
-  const total = arrays.reduce((sum, a) => sum + a.length, 0);
+function concat(arrays: Uint8Array[]): Uint8Array {
+  const total = arrays.reduce((s, a) => s + a.length, 0);
   const result = new Uint8Array(total);
   let offset = 0;
   for (const a of arrays) {
@@ -514,11 +505,9 @@ function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {
 export type EncryptionMode = "CBC" | "CTR" | "CFB";
 
 export interface CryptoOptions {
-  /** Called with progress 0–1 during encryption/decryption */
   onProgress?: (pct: number) => void;
 }
 
-/** Encrypt a file with optional progress callback */
 export async function encryptFile(
   file: File,
   key: string,
@@ -528,13 +517,13 @@ export async function encryptFile(
   const plaintext = new Uint8Array(await file.arrayBuffer());
   const salt = crypto.getRandomValues(new Uint8Array(SALT_SIZE));
   const iv = crypto.getRandomValues(new Uint8Array(IV_SIZE));
-  const masterKey = await deriveKey(key, salt);
+  const masterKey = await deriveMasterKey(key, salt);
 
   let encryptedData: Uint8Array;
   if (mode === "CBC") {
     encryptedData = await encryptCBC(masterKey, plaintext, options?.onProgress);
   } else if (mode === "CTR") {
-    encryptedData = await encryptCTR(masterKey, plaintext, iv, options?.onProgress);
+    encryptedData = await processCTR(masterKey, plaintext, iv, options?.onProgress);
   } else {
     encryptedData = await encryptCFB(masterKey, plaintext, iv, options?.onProgress);
   }
@@ -545,14 +534,13 @@ export async function encryptFile(
   const origSize = new Uint8Array(8);
   new DataView(origSize.buffer).setBigUint64(0, BigInt(plaintext.length), true);
 
-  const header = concatUint8Arrays([modeByte, salt, iv, origSize]);
+  const header = concat([modeByte, salt, iv, origSize]);
   const hmacKey = await deriveHmacKey(masterKey);
-  const hmac = await computeHmac(hmacKey, concatUint8Arrays([header, encryptedData]));
+  const hmac = await computeHmac(hmacKey, concat([header, encryptedData]));
 
-  return new Blob([concatUint8Arrays([header, hmac, encryptedData]) as unknown as BlobPart]);
+  return new Blob([concat([header, hmac, encryptedData]) as unknown as BlobPart]);
 }
 
-/** Decrypt a file with optional progress callback. Verifies HMAC integrity. */
 export async function decryptFile(
   file: File,
   key: string,
@@ -575,22 +563,20 @@ export async function decryptFile(
   const origSize = Number(
     new DataView(data.buffer).getBigUint64(1 + SALT_SIZE + IV_SIZE, true),
   );
-  const hmac = data.slice(
-    1 + SALT_SIZE + IV_SIZE + 8,
-    1 + SALT_SIZE + IV_SIZE + 8 + HMAC_SIZE,
-  );
-  const encryptedData = data.slice(1 + SALT_SIZE + IV_SIZE + 8 + HMAC_SIZE);
+  const hmacStart = 1 + SALT_SIZE + IV_SIZE + 8;
+  const hmac = data.slice(hmacStart, hmacStart + HMAC_SIZE);
+  const encryptedData = data.slice(hmacStart + HMAC_SIZE);
 
-  const masterKey = await deriveKey(key, salt);
+  const masterKey = await deriveMasterKey(key, salt);
   const hmacKey = await deriveHmacKey(masterKey);
-  const header = data.slice(0, 1 + SALT_SIZE + IV_SIZE + 8);
-  await verifyHmac(hmacKey, concatUint8Arrays([header, encryptedData]), hmac);
+  const header = data.slice(0, hmacStart);
+  await verifyHmac(hmacKey, concat([header, encryptedData]), hmac);
 
   let decrypted: Uint8Array;
   if (mode === "CBC") {
     decrypted = await decryptCBC(masterKey, encryptedData, options?.onProgress);
   } else if (mode === "CTR") {
-    decrypted = await decryptCTR(masterKey, encryptedData, iv, options?.onProgress);
+    decrypted = await processCTR(masterKey, encryptedData, iv, options?.onProgress);
   } else {
     decrypted = await decryptCFB(masterKey, encryptedData, iv, options?.onProgress);
   }
